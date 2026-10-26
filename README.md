@@ -14,7 +14,25 @@ It does **not** speed up a single connection, such as one big file in a browser.
 A download made of many connections (Steam, a download manager, torrents) does
 add up.
 
-## Use
+## Steam (recommended)
+
+Steam ignores the Windows proxy setting for game downloads. But it sends all of
+them to a local game cache if `lancache.steamcontent.com` points at your PC.
+phone-bond can act as that cache.
+
+1. Plug in the phones and turn on **USB tethering** on each one.
+2. Right-click **steam-on.bat** → **Run as administrator** (one time; it adds one line to the hosts file).
+3. Run `node bond.js --steam` and leave the window open.
+4. Fully exit Steam (tray icon → Exit) and open it again, then start the download.
+   The window lists the Steam servers it's downloading from and each phone's speed.
+
+To go back to normal Steam downloads, run **steam-off.bat** as administrator and restart Steam.
+While the hosts line is in place, Steam downloads only work while phone-bond is running.
+
+Tested with 2 phones: about 12 MB/s total, split evenly between them.
+If a phone drops out, phone-bond moves its downloads to the others and starts using it again once it's back.
+
+## Other apps (system proxy)
 
 1. Plug in the phones and turn on **USB tethering** on each one.
 2. Optional: turn off Wi-Fi, or keep it on as another connection.
@@ -50,8 +68,8 @@ HTTP/2 connection. The second makes it add connections more readily.
 
 - **Only one phone gets traffic:** check that every phone shows in `--list` with `*`.
   If one has no `*`, its tethering isn't giving the PC a gateway; unplug it and plug it back in.
-- **Steam ignores the proxy:** the window shows 0 MB/s while Steam downloads. If that
-  happens, use [dispatch](https://github.com/alexkirsz/dispatch) (SOCKS) with
-  Proxifier, or the paid app Speedify, which combines connections for every app.
+- **Steam shows 0 MB/s in the window:** you're using the system proxy mode, which Steam ignores.
+  Use the Steam steps above instead.
+- **A new phone isn't used:** phones are found at startup. Restart `bond.js` after plugging one in.
 - **Phone shows `DOWN`:** connections to that phone failed, so it is skipped for a
   few seconds and then tried again.

@@ -6,6 +6,7 @@
 //   node bond.js                      auto-detect interfaces that have a gateway
 //   node bond.js 192.168.42.10 ...    use these local IPs only
 //   node bond.js --system-proxy       also point Windows' proxy at us (restored on exit)
+//   node bond.js --steam              also act as Steam's local cache on port 80 (run steam-on.bat first)
 //   node bond.js --off                turn the Windows proxy off (if bond was killed)
 //   node bond.js --port 8118 --list
 
@@ -120,9 +121,29 @@ function track(link, stream, release) {
 
 // ---------- proxy ----------
 
-const server = http.createServer((req, res) => {
+const seenHosts = new Set();
+
+// Handles both proxy requests (absolute URL) and, in --steam mode, requests
+// Steam sends straight to us as its "lancache" (path only + real CDN Host header).
+function handle(req, res) {
   let url;
-  try { url = new URL(req.url); } catch {
+  try {
+    if (req.url.startsWith('/')) {
+      const host = req.headers.host || '';
+      // Our own name or a local address would loop back to us.
+      if (!host || /^(lancache\.steamcontent\.com|localhost|127\.)/i.test(host)) {
+        res.writeHead(404).end('phone-bond\n');
+        return;
+      }
+      url = new URL(`http://${host}${req.url}`);
+      if (!seenHosts.has(url.hostname)) {
+        seenHosts.add(url.hostname);
+        console.log(`\n[steam] downloading from ${url.hostname}`);
+      }
+    } else {
+      url = new URL(req.url);
+    }
+  } catch {
     res.writeHead(400).end('phone-bond: use me as an HTTP proxy\n');
     return;
   }
@@ -154,7 +175,9 @@ const server = http.createServer((req, res) => {
   };
   delete req.headers['proxy-connection'];
   attempt(choose(), false);
-});
+}
+
+const server = http.createServer(handle);
 
 // HTTPS and anything else tunnelled via CONNECT
 server.on('connect', (req, client, head) => {
@@ -240,3 +263,11 @@ server.listen(PORT, HOST, () => {
   if (flag('--system-proxy')) enableSystemProxy();
   console.log('Ctrl+C to stop.\n');
 });
+
+// Steam ignores the system proxy, but sends all game downloads to a local
+// "lancache" if lancache.steamcontent.com resolves to one (see steam-on.bat).
+if (flag('--steam')) {
+  http.createServer(handle)
+    .on('error', (e) => console.error(`\n[steam] can't listen on ${HOST}:80 (${e.code}) — is something else using port 80?`))
+    .listen(80, HOST, () => console.log(`[steam] cache mode on http://${HOST}:80`));
+}

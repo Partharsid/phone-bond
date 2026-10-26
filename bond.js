@@ -86,22 +86,17 @@ if (!links.length) {
 }
 
 // ---------- balancing ----------
-// Least active connections, weighted by measured speed: a faster phone finishes
-// its chunks sooner, frees slots, and so naturally gets more of the work.
+// Least active connections: a faster phone finishes its chunks sooner, frees
+// slots, and so naturally gets more of the work. Speed only breaks ties —
+// weighting by it starves a link that hasn't been measured yet.
 
 function choose(exclude) {
   const now = Date.now();
   let usable = links.filter((l) => l.downUntil < now && l !== exclude);
   if (!usable.length) usable = links.filter((l) => l !== exclude);
   if (!usable.length) usable = links;
-  const maxRate = Math.max(1, ...usable.map((l) => l.rate));
-  let best = null, bestScore = Infinity;
-  for (const l of usable) {
-    const weight = 0.3 + l.rate / maxRate; // floor so idle links still get probed
-    const score = (l.active + 1) / weight;
-    if (score < bestScore) { bestScore = score; best = l; }
-  }
-  return best;
+  return usable.reduce((best, l) =>
+    l.active < best.active || (l.active === best.active && l.rate > best.rate) ? l : best);
 }
 
 function markFail(l) {
@@ -109,13 +104,18 @@ function markFail(l) {
   l.downUntil = Date.now() + Math.min(30000, 2000 * l.fails);
 }
 
-function track(link, stream) {
+// Count a link as busy from the moment it's picked, not once connected:
+// otherwise a burst of simultaneous connections all lands on the same link.
+function claim(link) {
   link.active++;
   let done = false;
-  const end = () => { if (!done) { done = true; link.active--; } };
+  return () => { if (!done) { done = true; link.active--; } };
+}
+
+function track(link, stream, release) {
   stream.on('data', (c) => { link.bytes += c.length; });
-  stream.on('close', end);
-  stream.on('error', end);
+  stream.on('close', release);
+  stream.on('error', release);
 }
 
 // ---------- proxy ----------
@@ -127,16 +127,19 @@ const server = http.createServer((req, res) => {
     return;
   }
   const attempt = (link, retried) => {
+    const release = claim(link);
+    res.once('close', release);
     const up = http.request({
-      host: url.hostname, port: url.port || 80, method: req.method,
+      host: url.hostname, port: url.port || 80, method: req.method, family: 4,
       path: url.pathname + url.search, headers: req.headers, agent: link.agent,
     }, (r) => {
       link.fails = 0;
       res.writeHead(r.statusCode, r.headers);
-      track(link, r);
+      track(link, r, release);
       r.pipe(res);
     });
     up.on('error', () => {
+      release();
       markFail(link);
       // Only retry before any body was sent upstream (GET/HEAD are safe).
       if (!retried && !res.headersSent && (req.method === 'GET' || req.method === 'HEAD')) {
@@ -157,16 +160,20 @@ const server = http.createServer((req, res) => {
 server.on('connect', (req, client, head) => {
   const [host, port] = req.url.split(':');
   const attempt = (link, retried) => {
-    const up = net.connect({ host, port: Number(port) || 443, localAddress: link.ip });
+    const release = claim(link);
+    // family 4: we bind to IPv4 addresses, so an IPv6 DNS answer would fail with EINVAL
+    const up = net.connect({ host, port: Number(port) || 443, localAddress: link.ip, family: 4 });
+    up.once('close', release);
     up.once('connect', () => {
       link.fails = 0;
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (head && head.length) up.write(head);
-      track(link, up);
+      track(link, up, release);
       up.pipe(client);
       client.pipe(up);
     });
     up.once('error', () => {
+      release();
       if (!up.connecting && up.bytesRead) return client.destroy();
       markFail(link);
       if (!retried) attempt(choose(link), true);

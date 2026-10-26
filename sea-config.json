@@ -1,0 +1,8 @@
+{
+  "main": "bond.js",
+  "output": "dist/sea-prep.blob",
+  "disableExperimentalSEAWarning": true,
+  "useCodeCache": false,
+  "useSnapshot": false,
+  "assets": { "ui.html": "ui.html" }
+}

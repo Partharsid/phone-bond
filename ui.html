@@ -1,0 +1,539 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>phone-bond</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2312161f'/%3E%3Cpath d='M7 21h4V11H7zm7 0h4V7h-4zm7 0h4v-7h-4z' fill='%2357a6ff'/%3E%3C/svg%3E">
+<style>
+  :root {
+    --bg: #0b0e14;
+    --panel: #121722;
+    --panel-2: #171d2a;
+    --line: #232b3b;
+    --text: #e8ecf4;
+    --muted: #8a94a8;
+    --faint: #5b6478;
+    --accent: #57a6ff;
+    --good: #2fd27a;
+    --warn: #f5b13d;
+    --bad: #ff5f6d;
+    --radius: 14px;
+    --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace, monospace;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body {
+    font: 14px/1.45 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+    min-height: 100vh;
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font: inherit; color: inherit; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  header {
+    display: flex; align-items: center; gap: 14px;
+    padding: 14px 22px; border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; background: rgba(11, 14, 20, .92); backdrop-filter: blur(8px); z-index: 5;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; font-size: 16px; letter-spacing: .2px; }
+  .brand svg { width: 26px; height: 26px; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 7px; padding: 4px 10px; border-radius: 99px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); font-size: 12.5px;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  .dot.on { background: var(--good); box-shadow: 0 0 0 3px rgba(47, 210, 122, .18); }
+  .dot.warn { background: var(--warn); }
+  .dot.bad { background: var(--bad); }
+  .spacer { flex: 1; }
+  .btn {
+    border: 1px solid var(--line); background: var(--panel-2); padding: 7px 13px; border-radius: 9px;
+    cursor: pointer; font-size: 13px; transition: background .15s, border-color .15s;
+  }
+  .btn:hover { background: #1e2636; border-color: #2f3a50; }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #06101f; font-weight: 600; }
+  .btn.primary:hover { background: #79b8ff; }
+  .btn.danger:hover { border-color: var(--bad); color: #ffb3ba; }
+  .btn.small { padding: 4px 10px; font-size: 12px; border-radius: 7px; }
+
+  main {
+    display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px;
+    padding: 18px 22px 28px; max-width: 1500px; margin: 0 auto;
+  }
+  @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); }
+  .col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+  h2 { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .9px; color: var(--muted); margin: 0; }
+
+  /* hero */
+  .hero { padding: 20px 22px 8px; }
+  .hero-top { display: flex; align-items: flex-end; gap: 28px; flex-wrap: wrap; }
+  .speed { display: flex; align-items: baseline; gap: 10px; }
+  .speed .big { font-size: 64px; line-height: 1; font-weight: 600; letter-spacing: -2px; }
+  .speed .unit { font-size: 20px; color: var(--muted); }
+  .speed .mbps { font-size: 14px; color: var(--faint); margin-left: 4px; }
+  .stats { display: flex; gap: 26px; flex-wrap: wrap; padding-bottom: 6px; }
+  .stat .k { font-size: 12px; color: var(--muted); }
+  .stat .v { font-size: 18px; font-weight: 600; }
+  .chart-wrap { position: relative; height: 210px; margin-top: 16px; }
+  canvas { display: block; width: 100%; height: 100%; }
+  .legend { display: flex; gap: 14px; flex-wrap: wrap; padding: 10px 0 12px; font-size: 12.5px; color: var(--muted); }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .legend i { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+  /* phone cards */
+  .phones-head { display: flex; align-items: center; justify-content: space-between; margin: 2px 2px -6px; }
+  .phones { display: grid; grid-template-columns: repeat(auto-fill, minmax(270px, 1fr)); gap: 14px; }
+  .phone { padding: 16px 16px 14px; position: relative; overflow: hidden; transition: opacity .2s; }
+  .phone::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 4px; background: var(--c); }
+  .phone.off, .phone.gone { opacity: .55; }
+  .phone-top { display: flex; align-items: flex-start; gap: 10px; }
+  .phone-title { font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .phone-sub { font-size: 12px; color: var(--faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .chip { margin-left: auto; font-size: 11.5px; padding: 2px 8px; border-radius: 99px; background: var(--panel-2); border: 1px solid var(--line); color: var(--muted); flex: none; }
+  .chip.busy { color: var(--good); border-color: rgba(47, 210, 122, .35); }
+  .chip.down { color: var(--warn); border-color: rgba(245, 177, 61, .35); }
+  .chip.gone { color: var(--bad); border-color: rgba(255, 95, 109, .35); }
+  .phone-speed { display: flex; align-items: baseline; gap: 6px; margin: 12px 0 6px; }
+  .phone-speed .big { font-size: 30px; font-weight: 600; letter-spacing: -.5px; }
+  .phone-speed .unit { color: var(--muted); }
+  .phone-speed .share { margin-left: auto; color: var(--muted); font-size: 13px; }
+  .bar { height: 5px; background: var(--panel-2); border-radius: 99px; overflow: hidden; }
+  .bar > div { height: 100%; background: var(--c); border-radius: 99px; transition: width .6s ease; }
+  .spark { height: 44px; margin: 12px 0 8px; }
+  .kv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; font-size: 12px; color: var(--muted); }
+  .kv b { display: block; color: var(--text); font-weight: 600; font-size: 13.5px; }
+  .phone-foot { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+  .phone-foot .test { margin-left: auto; }
+
+  .switch { position: relative; width: 34px; height: 20px; flex: none; cursor: pointer; }
+  .switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+  .switch span { position: absolute; inset: 0; background: #2a3346; border-radius: 99px; transition: background .2s; }
+  .switch span::after { content: ""; position: absolute; left: 3px; top: 3px; width: 14px; height: 14px; border-radius: 50%; background: #cfd6e4; transition: transform .2s; }
+  .switch input:checked + span { background: var(--good); }
+  .switch input:checked + span::after { transform: translateX(14px); background: #fff; }
+  .switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  .empty { padding: 40px 24px; text-align: center; color: var(--muted); }
+  .empty .big { font-size: 17px; color: var(--text); margin-bottom: 6px; }
+
+  /* side */
+  .side { padding: 16px; }
+  .side h2 { margin-bottom: 12px; }
+  .row { display: flex; align-items: center; gap: 10px; }
+  .row + .row { margin-top: 10px; }
+  .row .label { flex: 1; }
+  .row .label small { display: block; color: var(--faint); font-size: 12px; }
+  .note { font-size: 12.5px; color: var(--muted); margin-top: 10px; }
+  .note.err { color: #ffb3ba; }
+  .results { margin-top: 12px; display: flex; flex-direction: column; gap: 7px; }
+  .result { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .result i { width: 9px; height: 9px; border-radius: 3px; }
+  .result .v { margin-left: auto; font-weight: 600; }
+  .tips { display: flex; flex-direction: column; gap: 10px; }
+  .tip { font-size: 13px; padding: 10px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); }
+  .tip.warn { border-color: rgba(245, 177, 61, .35); }
+  .tip b { color: var(--text); }
+  details summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-top: 12px; }
+  details ul { margin: 8px 0 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; }
+  details li + li { margin-top: 5px; }
+  .log { display: flex; flex-direction: column; gap: 6px; max-height: 220px; overflow: auto; font-size: 12.5px; }
+  .log div { display: flex; gap: 8px; color: var(--muted); }
+  .log time { color: var(--faint); flex: none; width: 52px; }
+
+  .overlay { position: fixed; inset: 0; background: rgba(6, 8, 12, .86); display: none; place-items: center; z-index: 20; text-align: center; padding: 24px; }
+  .overlay.show { display: grid; }
+  .overlay .box { max-width: 420px; }
+  .overlay .big { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
+  .overlay p { color: var(--muted); }
+  .progress { height: 3px; background: var(--panel-2); border-radius: 99px; overflow: hidden; margin-top: 10px; }
+  .progress div { height: 100%; width: 40%; background: var(--accent); animation: slide 1.2s ease-in-out infinite; }
+  @keyframes slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
+  @media (prefers-reduced-motion: reduce) { .progress div { animation: none; width: 100%; } .bar > div { transition: none; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#171d2a"/><path d="M7 21h4V11H7zm7 0h4V7h-4zm7 0h4v-7h-4z" fill="#57a6ff"/></svg>
+    phone-bond
+  </div>
+  <span class="pill" id="steamPill"><span class="dot" id="steamDot"></span><span id="steamPillText">Steam mode</span></span>
+  <div class="spacer"></div>
+  <button class="btn" id="restartSteam" title="Steam only notices phone-bond when it starts">Restart Steam</button>
+  <button class="btn danger" id="quit">Stop &amp; restore</button>
+</header>
+
+<main>
+  <div class="col">
+    <section class="panel hero">
+      <div class="hero-top">
+        <div>
+          <h2>Total download speed</h2>
+          <div class="speed"><span class="big num" id="total">0.0</span><span class="unit">MB/s</span><span class="mbps num" id="mbps">0 Mbps</span></div>
+        </div>
+        <div class="stats">
+          <div class="stat"><div class="k">Peak</div><div class="v num" id="peak">0.0 MB/s</div></div>
+          <div class="stat"><div class="k">Downloaded</div><div class="v num" id="gb">0.00 GB</div></div>
+          <div class="stat"><div class="k">Connections</div><div class="v num" id="count">0</div></div>
+          <div class="stat" title="Pieces moved to another phone because one dropped, froze or was crawling"><div class="k">Rescued</div><div class="v num" id="rescued">0</div></div>
+          <div class="stat"><div class="k">Running</div><div class="v num" id="uptime">0:00</div></div>
+        </div>
+      </div>
+      <div class="chart-wrap"><canvas id="chart" aria-label="Download speed per phone over the last 2 minutes"></canvas></div>
+      <div class="legend" id="legend"></div>
+    </section>
+
+    <div class="phones-head"><h2>Phones</h2><span class="note" style="margin:0" id="phonesNote"></span></div>
+    <section class="phones" id="phones"></section>
+  </div>
+
+  <aside class="col">
+    <section class="panel side">
+      <h2>Modes</h2>
+      <div class="row">
+        <div class="label">Steam mode<small>Steam game downloads use all phones</small></div>
+        <label class="switch"><input type="checkbox" id="steamToggle" aria-label="Steam mode"><span></span></label>
+      </div>
+      <div class="row">
+        <div class="label">System proxy<small>For other apps that use Windows' proxy</small></div>
+        <label class="switch"><input type="checkbox" id="proxyToggle" aria-label="System proxy"><span></span></label>
+      </div>
+      <div class="note" id="modeNote"></div>
+    </section>
+
+    <section class="panel side">
+      <h2>Speed test</h2>
+      <div class="row">
+        <div class="label">Each phone alone, then all together<small>About 8 seconds per phone</small></div>
+        <button class="btn primary small" id="testAll">Run</button>
+      </div>
+      <div id="testState"></div>
+      <div class="results" id="testResults"></div>
+    </section>
+
+    <section class="panel side">
+      <h2>Get more speed</h2>
+      <div class="tips" id="tips"></div>
+      <details>
+        <summary>Always worth checking</summary>
+        <ul>
+          <li>Put phones near a window, standing up and apart from each other.</li>
+          <li>Turn off battery saver and data saver on every phone.</li>
+          <li>Keep phones charging and cool; hot phones slow their modem down.</li>
+          <li>Use USB 3 (blue) ports, and a short, good cable.</li>
+          <li>Phones on different carriers add more than phones on the same one.</li>
+          <li>Check your plan's tethering allowance; some slow down after a daily limit.</li>
+        </ul>
+      </details>
+    </section>
+
+    <section class="panel side">
+      <h2>Activity</h2>
+      <div class="log" id="log"></div>
+    </section>
+  </aside>
+</main>
+
+<div class="overlay" id="overlay"><div class="box"><div class="big" id="ovTitle">Connecting…</div><p id="ovText">Starting phone-bond.</p><div class="progress" id="ovProgress"><div></div></div></div></div>
+
+<script>
+'use strict';
+const COLORS = ['#57a6ff', '#f5b13d', '#2fd27a', '#ff6fa8', '#a78bfa', '#2dd4bf', '#fb923c', '#94a3b8'];
+const colorOf = new Map();
+const color = (ip) => { if (!colorOf.has(ip)) colorOf.set(ip, COLORS[colorOf.size % COLORS.length]); return colorOf.get(ip); };
+const $ = (id) => document.getElementById(id);
+const MB = 1048576;
+const fmt = (b, d = 1) => (b / MB).toFixed(d);
+const gb = (b) => (b >= 1073741824 ? `${(b / 1073741824).toFixed(2)} GB` : `${(b / MB).toFixed(0)} MB`);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const label = (l) => l.carrier || l.name;
+const shortDesc = (d) => d.replace(/Remote NDIS based Internet Sharing Device/i, 'USB tethering').replace(/Mobile USB Remote NDIS Network Device/i, 'USB tethering').replace(/\s*#\d+$/, '');
+let last = null;
+let stopped = false;
+
+function post(path, body) {
+  return fetch(path, { method: 'POST', headers: { 'x-bond': '1', 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }).catch(() => {});
+}
+
+function overlay(title, text, progress) {
+  $('ovTitle').textContent = title;
+  $('ovText').textContent = text;
+  $('ovProgress').style.display = progress ? '' : 'none';
+  $('overlay').classList.toggle('show', !!title);
+}
+
+// ---------- chart ----------
+function sizeCanvas(cv) {
+  const r = cv.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(r.width * dpr) || cv.height !== Math.round(r.height * dpr)) {
+    cv.width = Math.round(r.width * dpr); cv.height = Math.round(r.height * dpr);
+  }
+  const ctx = cv.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w: r.width, h: r.height };
+}
+
+function niceMax(v) {
+  const m = Math.max(v, 1 * MB);
+  const steps = [1, 2, 2.5, 5, 10];
+  const p = Math.pow(10, Math.floor(Math.log10(m / MB)));
+  for (const s of steps) if (s * p * MB >= m) return s * p * MB;
+  return 10 * p * MB;
+}
+
+function drawChart(s) {
+  const { ctx, w, h } = sizeCanvas($('chart'));
+  ctx.clearRect(0, 0, w, h);
+  const N = 120, padL = 40, padB = 18, padT = 6;
+  const cw = w - padL, ch = h - padB - padT;
+  const series = s.links.map((l) => {
+    const hist = l.history.slice(-N);
+    return { ip: l.ip, data: Array(N - hist.length).fill(0).concat(hist) };
+  });
+  const totals = Array.from({ length: N }, (_, i) => series.reduce((a, se) => a + se.data[i], 0));
+  const max = niceMax(Math.max(...totals) * 1.12);
+  ctx.font = '11px ' + getComputedStyle(document.body).getPropertyValue('--mono');
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (let i = 0; i <= 4; i++) {
+    const y = padT + ch - (ch * i) / 4;
+    ctx.strokeStyle = i ? 'rgba(255,255,255,.06)' : 'rgba(255,255,255,.14)';
+    ctx.beginPath(); ctx.moveTo(padL, y + .5); ctx.lineTo(w, y + .5); ctx.stroke();
+    ctx.fillStyle = '#5b6478';
+    ctx.fillText(((max / MB) * i / 4).toFixed(max / MB < 4 ? 1 : 0), padL - 8, y);
+  }
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+  ctx.fillText('2 min ago', padL, h - 3);
+  ctx.textAlign = 'right'; ctx.fillText('now', w, h - 3);
+  const x = (i) => padL + (cw * i) / (N - 1);
+  const y = (v) => padT + ch - (ch * v) / max;
+  const base = Array(N).fill(0);
+  for (const se of series) {
+    const top = base.map((b, i) => b + se.data[i]);
+    ctx.beginPath();
+    ctx.moveTo(x(0), y(top[0]));
+    for (let i = 1; i < N; i++) ctx.lineTo(x(i), y(top[i]));
+    for (let i = N - 1; i >= 0; i--) ctx.lineTo(x(i), y(base[i]));
+    ctx.closePath();
+    const c = color(se.ip);
+    ctx.fillStyle = c + '55'; ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(x(0), y(top[0]));
+    for (let i = 1; i < N; i++) ctx.lineTo(x(i), y(top[i]));
+    ctx.strokeStyle = c; ctx.lineWidth = 1.6; ctx.stroke();
+    for (let i = 0; i < N; i++) base[i] = top[i];
+  }
+}
+
+function drawSpark(cv, hist, c) {
+  const { ctx, w, h } = sizeCanvas(cv);
+  ctx.clearRect(0, 0, w, h);
+  const data = hist.slice(-60);
+  if (data.length < 2) return;
+  const max = Math.max(...data, 0.5 * MB);
+  const x = (i) => (w * i) / (data.length - 1);
+  const y = (v) => h - 2 - ((h - 4) * v) / max;
+  ctx.beginPath(); ctx.moveTo(0, h);
+  data.forEach((v, i) => ctx.lineTo(x(i), y(v)));
+  ctx.lineTo(w, h); ctx.closePath();
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, c + '66'); g.addColorStop(1, c + '00');
+  ctx.fillStyle = g; ctx.fill();
+  ctx.beginPath();
+  data.forEach((v, i) => (i ? ctx.lineTo(x(i), y(v)) : ctx.moveTo(x(i), y(v))));
+  ctx.strokeStyle = c; ctx.lineWidth = 1.5; ctx.stroke();
+}
+
+// ---------- phones ----------
+const STATUS = { busy: 'Downloading', idle: 'Idle', down: 'Retrying', gone: 'Disconnected', off: 'Paused' };
+
+function phoneCard(l) {
+  const el = document.createElement('article');
+  el.className = 'panel phone';
+  el.dataset.ip = l.ip;
+  el.style.setProperty('--c', color(l.ip));
+  el.innerHTML = `
+    <div class="phone-top">
+      <div style="min-width:0">
+        <div class="phone-title"></div>
+        <div class="phone-sub"></div>
+      </div>
+      <span class="chip"></span>
+    </div>
+    <div class="phone-speed"><span class="big num"></span><span class="unit">MB/s</span><span class="share num"></span></div>
+    <div class="bar"><div></div></div>
+    <canvas class="spark"></canvas>
+    <div class="kv">
+      <div>Downloads<b class="num k-active"></b></div>
+      <div>Data used<b class="num k-data"></b></div>
+      <div>Peak<b class="num k-peak"></b></div>
+    </div>
+    <div class="phone-foot">
+      <label class="switch" title="Use this connection"><input type="checkbox" aria-label="Use this connection"><span></span></label>
+      <span class="k-use"></span>
+      <button class="btn small test">Test</button>
+    </div>`;
+  el.querySelector('input').addEventListener('change', (e) => post('/api/link', { ip: l.ip, enabled: e.target.checked }));
+  el.querySelector('.test').addEventListener('click', () => post('/api/test', { ip: l.ip }));
+  return el;
+}
+
+function renderPhones(s) {
+  const box = $('phones');
+  if (!s.links.length) {
+    box.innerHTML = `<div class="panel empty" style="grid-column:1/-1"><div class="big">No phones connected yet</div>
+      Plug in a phone with a USB cable and turn on <b>USB tethering</b> in its hotspot settings. It shows up here within a few seconds.</div>`;
+    return;
+  }
+  box.querySelector('.empty')?.remove();
+  const total = s.links.reduce((a, l) => a + l.now, 0);
+  const seen = new Set();
+  for (const l of s.links) {
+    seen.add(l.ip);
+    let el = box.querySelector(`[data-ip="${CSS.escape(l.ip)}"]`);
+    if (!el) { el = phoneCard(l); box.appendChild(el); }
+    el.className = `panel phone ${l.status}`;
+    el.querySelector('.phone-title').textContent = label(l);
+    el.querySelector('.phone-sub').textContent = [l.carrier ? l.name : '', shortDesc(l.desc || ''), l.ip].filter(Boolean).join(' · ');
+    const chip = el.querySelector('.chip');
+    chip.className = `chip ${l.status}`; chip.textContent = STATUS[l.status] || l.status;
+    el.querySelector('.phone-speed .big').textContent = fmt(l.now);
+    const share = total ? Math.round((l.now / total) * 100) : 0;
+    el.querySelector('.share').textContent = total ? `${share}% of total` : '';
+    el.querySelector('.bar > div').style.width = `${share}%`;
+    el.querySelector('.k-active').textContent = l.active;
+    el.querySelector('.k-data').textContent = gb(l.bytes);
+    el.querySelector('.k-peak').textContent = `${fmt(l.peak)} MB/s`;
+    const input = el.querySelector('input');
+    if (document.activeElement !== input) input.checked = l.enabled;
+    input.disabled = l.status === 'gone';
+    el.querySelector('.k-use').textContent = l.test?.running ? 'Testing…' : l.test?.rate != null ? `Tested: ${fmt(l.test.rate)} MB/s` : (l.enabled ? 'In use' : 'Not used');
+    el.querySelector('.test').disabled = s.test.running || l.status === 'gone' || !l.enabled;
+    drawSpark(el.querySelector('.spark'), l.history, color(l.ip));
+  }
+  for (const el of [...box.querySelectorAll('.phone')]) if (!seen.has(el.dataset.ip)) el.remove();
+}
+
+// ---------- side panels ----------
+function renderModes(s) {
+  const st = $('steamToggle'), px = $('proxyToggle');
+  if (document.activeElement !== st) st.checked = s.steam.on;
+  if (document.activeElement !== px) px.checked = s.proxy.on;
+  st.disabled = !s.steam.admin && !s.steam.on;
+  $('steamDot').className = 'dot ' + (s.steam.on ? 'on' : s.steam.admin ? '' : 'warn');
+  $('steamPillText').textContent = s.steam.on ? 'Steam mode on' : s.steam.admin ? 'Steam mode off' : 'Steam mode needs admin';
+  $('restartSteam').disabled = !s.steam.running && !s.steam.on;
+  const note = $('modeNote');
+  if (s.steam.error) { note.className = 'note err'; note.textContent = s.steam.error; }
+  else if (!s.steam.admin) { note.className = 'note err'; note.textContent = 'Steam mode needs admin. Close phone-bond, open it again and click Yes when Windows asks.'; }
+  else if (s.steam.on) { note.className = 'note'; note.textContent = 'Steam downloads go through your phones. Stopping phone-bond puts Steam back to normal.'; }
+  else { note.className = 'note'; note.textContent = ''; }
+}
+
+function renderTest(s) {
+  $('testAll').disabled = s.test.running || !s.links.some((l) => l.status !== 'gone' && l.enabled);
+  $('testState').innerHTML = s.test.running
+    ? `<div class="note">${esc(s.test.phase)}…</div><div class="progress"><div></div></div>`
+    : s.test.error ? `<div class="note err">${esc(s.test.error)}</div>` : '';
+  const tested = s.links.filter((l) => l.test && l.test.rate != null);
+  const rows = tested.map((l) => `<div class="result"><i style="background:${color(l.ip)}"></i>${esc(label(l))} alone<span class="v num">${fmt(l.test.rate)} MB/s</span></div>`);
+  if (s.test.combined != null) {
+    const sum = tested.reduce((a, l) => a + l.test.rate, 0);
+    const pct = sum ? Math.round((s.test.combined / sum) * 100) : 0;
+    rows.push(`<div class="result" style="border-top:1px solid var(--line);padding-top:8px"><b>All together</b><span class="v num">${fmt(s.test.combined)} MB/s</span></div>`);
+    if (sum) rows.push(`<div class="note" style="margin-top:0">${pct}% of the phones' combined speed (${fmt(sum)} MB/s).</div>`);
+  }
+  $('testResults').innerHTML = rows.join('');
+}
+
+function renderTips(s) {
+  const tips = [];
+  const live = s.links.filter((l) => l.status !== 'gone' && l.enabled);
+  if (!s.links.length) tips.push(['warn', 'Plug in a phone and turn on <b>USB tethering</b>.']);
+  else if (live.length === 1) tips.push(['', 'Only one connection is in use. Each extra phone adds its speed.']);
+  // Weak phone, from the speed test or the last 30 seconds of real downloading.
+  const score = (l) => (l.test && l.test.rate != null ? l.test.rate : l.history.slice(-30).reduce((a, b) => a + b, 0) / 30);
+  if (live.length > 1 && live.some((l) => score(l) > 0.3 * MB)) {
+    const best = live.reduce((a, b) => (score(b) > score(a) ? b : a));
+    for (const l of live) {
+      if (l !== best && score(l) < score(best) * 0.4) {
+        tips.push(['warn', `<b>${esc(label(l))}</b> is much slower than <b>${esc(label(best))}</b> (${fmt(score(l))} vs ${fmt(score(best))} MB/s). Move it near a window, stand it up, and check it isn't on 3G or in battery saver.`]);
+      }
+    }
+  }
+  const byCarrier = {};
+  for (const l of live) if (l.carrier) (byCarrier[l.carrier] = byCarrier[l.carrier] || []).push(l);
+  for (const [c, ls] of Object.entries(byCarrier)) {
+    if (ls.length > 1) tips.push(['', `${ls.length} phones are on <b>${esc(c)}</b>. Phones on the same network can share one tower; a phone on a different carrier usually adds more.`]);
+  }
+  const quiet = s.total.history.slice(-20).every((v) => v < 50 * 1024);
+  if (s.steam.on && quiet && s.uptime > 20000) {
+    tips.push(['', 'Nothing is downloading. Start a download in Steam. If Steam was open before phone-bond, click <b>Restart Steam</b>.']);
+  }
+  if (s.counters.rescues + s.counters.resumes > 0) {
+    tips.push(['', `${s.counters.resumes} piece(s) continued after a phone dropped and ${s.counters.rescues} moved off a crawling phone, without starting over.`]);
+  }
+  if (!tips.length) tips.push(['', 'Everything looks good.']);
+  $('tips').innerHTML = tips.map(([k, t]) => `<div class="tip ${k}">${t}</div>`).join('');
+}
+
+function renderLog(s) {
+  const ago = (t) => { const m = Math.round((s.t - t) / 60000); return m < 1 ? 'now' : m < 60 ? `${m} min` : `${Math.round(m / 60)} h`; };
+  $('log').innerHTML = s.events.length
+    ? s.events.map((e) => `<div><time>${ago(e.t)}</time><span>${esc(e.msg)}</span></div>`).join('')
+    : '<div>Nothing yet.</div>';
+}
+
+function render(s) {
+  last = s;
+  const live = s.links.filter((l) => l.status !== 'gone');
+  $('total').textContent = fmt(s.total.now);
+  $('mbps').textContent = `${Math.round((s.total.now * 8) / 1e6)} Mbps`;
+  $('peak').textContent = `${fmt(s.total.peak)} MB/s`;
+  $('gb').textContent = gb(s.total.bytes);
+  $('count').textContent = live.length;
+  $('rescued').textContent = s.counters.resumes + s.counters.rescues;
+  const sec = Math.floor(s.uptime / 1000);
+  $('uptime').textContent = sec >= 3600 ? `${Math.floor(sec / 3600)}:${String(Math.floor(sec / 60) % 60).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}` : `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
+  $('phonesNote').textContent = live.length ? `${live.length} connected` : '';
+  $('legend').innerHTML = s.links.map((l) => `<span><i style="background:${color(l.ip)}"></i>${esc(label(l))}</span>`).join('');
+  drawChart(s);
+  renderPhones(s);
+  renderModes(s);
+  renderTest(s);
+  renderTips(s);
+  renderLog(s);
+  document.title = s.total.now > 100 * 1024 ? `${fmt(s.total.now)} MB/s · phone-bond` : 'phone-bond';
+}
+
+// ---------- wiring ----------
+function connect() {
+  const es = new EventSource('/events');
+  es.onmessage = (e) => { if (!stopped) { overlay(''); render(JSON.parse(e.data)); } };
+  es.onerror = () => {
+    if (stopped) return;
+    overlay('phone-bond isn’t running', 'Start phone-bond again to reconnect. This window will pick it up.', true);
+  };
+}
+
+$('steamToggle').addEventListener('change', (e) => post('/api/steam', { on: e.target.checked }));
+$('proxyToggle').addEventListener('change', (e) => post('/api/proxy', { on: e.target.checked }));
+$('restartSteam').addEventListener('click', () => post('/api/restart-steam'));
+$('testAll').addEventListener('click', () => post('/api/test', {}));
+$('quit').addEventListener('click', async () => {
+  if (!confirm('Stop phone-bond? Steam goes back to downloading normally.')) return;
+  stopped = true;
+  overlay('Stopping…', 'Putting Steam and Windows back to normal.', true);
+  await post('/api/quit');
+  overlay('phone-bond stopped', 'Steam and Windows are back to normal. You can close this window.', false);
+  setTimeout(() => window.close(), 1500);
+});
+window.addEventListener('resize', () => last && render(last));
+overlay('Connecting…', 'Starting phone-bond.', true);
+connect();
+</script>
+</body>
+</html>

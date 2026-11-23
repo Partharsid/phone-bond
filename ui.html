@@ -144,6 +144,19 @@
   .log div { display: flex; gap: 8px; color: var(--muted); }
   .log time { color: var(--faint); flex: none; width: 52px; }
 
+
+  /* fast download */
+  .input { flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--line); color: var(--text); border-radius: 9px; padding: 7px 10px; font: inherit; font-size: 13px; }
+  .input:focus { outline: 2px solid var(--accent); outline-offset: 1px; border-color: transparent; }
+  .dls { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+  .dl { padding: 10px 12px; border-radius: 10px; background: var(--panel-2); border: 1px solid var(--line); font-size: 12.5px; }
+  .dl .name { font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dl .meta { color: var(--muted); margin-top: 4px; display: flex; gap: 8px; flex-wrap: wrap; }
+  .dl .bar { margin-top: 8px; }
+  .dl .acts { display: flex; gap: 6px; margin-top: 8px; }
+  .dl.error .name { color: #ffb3ba; }
+  .dl.done .bar > div { background: var(--good); }
+
   .overlay { position: fixed; inset: 0; background: rgba(6, 8, 12, .86); display: none; place-items: center; z-index: 20; text-align: center; padding: 24px; }
   .overlay.show { display: grid; }
   .overlay .box { max-width: 420px; }
@@ -202,7 +215,23 @@
         <div class="label">System proxy<small>For other apps that use Windows' proxy</small></div>
         <label class="switch"><input type="checkbox" id="proxyToggle" aria-label="System proxy"><span></span></label>
       </div>
+      <div class="row">
+        <div class="label">SOCKS5 for torrents &amp; other apps<small class="num" id="socksAddr">127.0.0.1:1080</small></div>
+        <button class="btn small" id="socksCopy">Copy</button>
+      </div>
+      <div class="note" id="socksNote">Torrent clients (qBittorrent, Transmission…): Settings → Connection → proxy type SOCKS5, host 127.0.0.1, this port. Every peer connection is then spread over your phones.</div>
       <div class="note" id="modeNote"></div>
+    </section>
+
+    <section class="panel side" id="fastPanel">
+      <h2>Fast download</h2>
+      <div class="note" style="margin-top:0">Paste any download link (http or https). phone-bond downloads it itself over all phones at once, so one big file uses every phone.</div>
+      <div class="row" style="margin-top:10px">
+        <input class="input" id="dlUrl" placeholder="https://…" spellcheck="false" autocomplete="off">
+        <button class="btn primary small" id="dlGo">Download</button>
+      </div>
+      <div class="note err" id="dlError" style="display:none"></div>
+      <div class="dls" id="dlList"></div>
     </section>
 
     <section class="panel side">
@@ -506,8 +535,51 @@ function render(s) {
   renderTest(s);
   renderTips(s);
   renderLog(s);
+  renderDownloads(s);
   document.title = s.total.now > 100 * 1024 ? `${fmt(s.total.now)} MB/s · phone-bond` : 'phone-bond';
 }
+
+// ---------- fast download + everywhere mode ----------
+const dlStatus = { starting: 'Starting', downloading: 'Downloading', done: 'Done', error: 'Failed', cancelled: 'Cancelled' };
+function renderDownloads(s) {
+  const list = s.downloads || [];
+  $('fastPanel').style.display = s.downloads === undefined ? 'none' : '';
+  const finished = list.filter((d) => ['done', 'error', 'cancelled'].includes(d.status)).length;
+  $('dlList').innerHTML = list.slice().reverse().map((d) => {
+    const pct = d.total ? Math.min(100, Math.round((d.done / d.total) * 100)) : 0;
+    const sum = d.links.reduce((a, l) => a + l.bytes, 0) || 1;
+    const split = d.links.map((l) => `${esc(l.name)} ${Math.round((l.bytes / sum) * 100)}%`).join(' · ');
+    const running = d.status === 'starting' || d.status === 'downloading';
+    const size = d.total ? `${gb(d.done)} / ${gb(d.total)}` : gb(d.done);
+    return `<div class="dl ${d.status}" data-id="${d.id}">
+      <div class="name" title="${esc(d.url)}">${esc(d.name || d.url)}</div>
+      <div class="bar"><div style="width:${d.status === 'done' ? 100 : pct}%"></div></div>
+      <div class="meta"><span>${dlStatus[d.status] || d.status}${d.status === 'downloading' && d.total ? ` ${pct}%` : ''}</span><span class="num">${size}</span>${running ? `<span class="num">${fmt(d.speed)} MB/s</span>` : `<span class="num">${Math.round(d.secs)} s</span>`}</div>
+      ${split ? `<div class="meta">${split}</div>` : ''}
+      ${d.status === 'error' ? `<div class="meta" style="color:#ffb3ba">${esc(d.msg)}</div>` : d.status === 'downloading' && d.msg.startsWith('This server') ? `<div class="meta">${esc(d.msg)}</div>` : ''}
+      <div class="acts">${running ? '<button class="btn small danger" data-act="cancel">Cancel</button>' : ''}${d.status === 'done' || running ? '<button class="btn small" data-act="open">Show in folder</button>' : ''}</div>
+    </div>`;
+  }).join('') + (finished ? '<button class="btn small" data-act="clear">Clear finished</button>' : '');
+  if (s.socks) $('socksAddr').textContent = `127.0.0.1:${s.socks}`;
+  $('socksCopy').parentElement.style.display = s.socks ? '' : 'none';
+  $('socksNote').style.display = s.socks ? '' : 'none';
+}
+async function startDownload() {
+  const url = $('dlUrl').value.trim();
+  if (!url) return;
+  const r = await fetch('/api/fetch', { method: 'POST', headers: { 'x-bond': '1', 'content-type': 'application/json' }, body: JSON.stringify({ url }) }).then((x) => x.json()).catch(() => ({}));
+  const err = $('dlError');
+  if (r.error) { err.textContent = r.error; err.style.display = ''; } else { err.style.display = 'none'; $('dlUrl').value = ''; }
+}
+$('dlGo').addEventListener('click', startDownload);
+$('dlUrl').addEventListener('keydown', (e) => { if (e.key === 'Enter') startDownload(); });
+$('dlList').addEventListener('click', (e) => {
+  const b = e.target.closest('button[data-act]');
+  if (!b) return;
+  const id = Number(b.closest('.dl')?.dataset.id || 0);
+  post({ cancel: '/api/fetch-cancel', open: '/api/fetch-open', clear: '/api/fetch-clear' }[b.dataset.act], { id });
+});
+$('socksCopy').addEventListener('click', () => { navigator.clipboard?.writeText($('socksAddr').textContent); $('socksCopy').textContent = 'Copied'; setTimeout(() => ($('socksCopy').textContent = 'Copy'), 1200); });
 
 // ---------- wiring ----------
 function connect() {

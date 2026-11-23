@@ -1,0 +1,20 @@
+[package]
+name = "phone-bond"
+version = "0.4.0"
+edition = "2021"
+description = "Bond several USB-tethered phones into one fast Steam download"
+
+[dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "time", "sync", "macros", "process", "signal"] }
+httparse = "1"
+serde_json = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

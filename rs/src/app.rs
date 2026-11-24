@@ -17,6 +17,7 @@ pub struct Cfg {
     pub port: u16,
     pub ui_port: u16,
     pub socks_port: u16,
+    pub background: bool,
     pub explicit_ips: Vec<Ipv4Addr>,
     pub allow_loopback: bool,
     pub no_ui: bool,
@@ -158,6 +159,9 @@ pub struct App {
     pub ui_clients: AtomicUsize,
     pub lonely_since: Mutex<Option<Instant>>,
     pub quitting: AtomicBool,
+    /// Keep running when the dashboard window is closed.
+    pub background: AtomicBool,
+    pub autostart: AtomicBool,
     pub downloads: Mutex<Vec<Arc<crate::fetch::Dl>>>,
     pub next_dl: AtomicU64,
 }
@@ -187,6 +191,8 @@ impl App {
             ui_clients: AtomicUsize::new(0),
             lonely_since: Mutex::new(None),
             quitting: AtomicBool::new(false),
+            background: AtomicBool::new(false),
+            autostart: AtomicBool::new(false),
             downloads: Mutex::new(Vec::new()),
             next_dl: AtomicU64::new(1),
         })
@@ -249,7 +255,7 @@ impl App {
             "proxy": {"on": self.proxy.lock().unwrap().on},
             "test": {"running": ts.running, "phase": ts.phase, "combined": ts.combined, "error": ts.error},
             "links": ls,
-            "streams": self.total_streams(), "target": self.target.load(Relaxed), "socks": self.cfg.socks_port,
+            "streams": self.total_streams(), "target": self.target.load(Relaxed), "socks": self.cfg.socks_port, "autostart": self.autostart.load(Relaxed), "background": self.background.load(Relaxed),
             "downloads": self.downloads.lock().unwrap().iter().map(|d| d.json()).collect::<Vec<_>>(),
         })
         .to_string()

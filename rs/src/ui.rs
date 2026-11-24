@@ -141,21 +141,36 @@ async fn conn(app: Arc<App>, mut s: TcpStream) {
                         Err(e) => json!({ "error": e }),
                     };
                 }
-                "/api/fetch-cancel" | "/api/fetch-open" | "/api/fetch-clear" => {
+                "/api/fetch-cancel" | "/api/fetch-pause" | "/api/fetch-resume" | "/api/fetch-open" | "/api/fetch-clear" => {
                     let id = v["id"].as_u64().unwrap_or(0);
-                    let mut list = app.downloads.lock().unwrap();
+                    let found = app.downloads.lock().unwrap().iter().find(|d| d.id == id).cloned();
                     if p == "/api/fetch-clear" {
-                        list.retain(|d| !matches!(d.status.lock().unwrap().0, "done" | "error" | "cancelled"));
-                    } else if let Some(d) = list.iter().find(|d| d.id == id) {
-                        if p == "/api/fetch-cancel" {
-                            d.cancel.store(true, Relaxed);
-                        } else {
-                            let path = d.path.lock().unwrap().clone();
-                            let st = d.status.lock().unwrap().0;
-                            let target = if st == "done" { path } else { format!("{path}.phonebond") };
-                            let _ = sys::cmd("explorer.exe").arg(format!("/select,{target}")).spawn();
+                        app.downloads.lock().unwrap().retain(|d| !matches!(d.status.lock().unwrap().0, "done" | "error" | "cancelled"));
+                    } else if let Some(d) = found {
+                        match p {
+                            "/api/fetch-cancel" => crate::fetch::cancel(&d),
+                            "/api/fetch-pause" => crate::fetch::pause(&d),
+                            "/api/fetch-resume" => crate::fetch::resume(&app, &d),
+                            _ => {
+                                let path = d.path.lock().unwrap().clone();
+                                let st = d.status.lock().unwrap().0;
+                                let target = if st == "done" { path } else { format!("{path}.phonebond") };
+                                let _ = sys::cmd("explorer.exe").arg(format!("/select,{target}")).spawn();
+                            }
                         }
                     }
+                }
+                "/api/autostart" => {
+                    let on = v["on"].as_bool().unwrap_or(false);
+                    extra = match sys::blocking(move || sys::autostart_set(on)).await {
+                        Ok(()) => {
+                            app.autostart.store(on, Relaxed);
+                            app.background.store(on || app.cfg.background, Relaxed);
+                            app.log(if on { "Start with Windows: on. phone-bond keeps running when this window is closed" } else { "Start with Windows: off" });
+                            json!({ "result": true })
+                        }
+                        Err(e) => json!({ "error": e }),
+                    };
                 }
                 "/api/quit" => {
                     let mut o = json!({"ok": true});

@@ -215,6 +215,10 @@
         <div class="label">System proxy<small>For other apps that use Windows' proxy</small></div>
         <label class="switch"><input type="checkbox" id="proxyToggle" aria-label="System proxy"><span></span></label>
       </div>
+      <div class="row" id="autoRow" style="display:none">
+        <div class="label">Start with Windows<small>Runs quietly in the background; closing this window keeps your phones bonded</small></div>
+        <label class="switch"><input type="checkbox" id="autoToggle" aria-label="Start with Windows"><span></span></label>
+      </div>
       <div class="row">
         <div class="label">SOCKS5 for torrents &amp; other apps<small class="num" id="socksAddr">127.0.0.1:1080</small></div>
         <button class="btn small" id="socksCopy">Copy</button>
@@ -540,7 +544,7 @@ function render(s) {
 }
 
 // ---------- fast download + everywhere mode ----------
-const dlStatus = { starting: 'Starting', downloading: 'Downloading', done: 'Done', error: 'Failed', cancelled: 'Cancelled' };
+const dlStatus = { starting: 'Starting', downloading: 'Downloading', paused: 'Paused', done: 'Done', error: 'Failed', cancelled: 'Cancelled' };
 function renderDownloads(s) {
   const list = s.downloads || [];
   $('fastPanel').style.display = s.downloads === undefined ? 'none' : '';
@@ -556,12 +560,15 @@ function renderDownloads(s) {
       <div class="bar"><div style="width:${d.status === 'done' ? 100 : pct}%"></div></div>
       <div class="meta"><span>${dlStatus[d.status] || d.status}${d.status === 'downloading' && d.total ? ` ${pct}%` : ''}</span><span class="num">${size}</span>${running ? `<span class="num">${fmt(d.speed)} MB/s</span>` : `<span class="num">${Math.round(d.secs)} s</span>`}</div>
       ${split ? `<div class="meta">${split}</div>` : ''}
+      ${d.status === 'paused' ? `<div class="meta">${esc(d.msg)}</div>` : ''}
       ${d.status === 'error' ? `<div class="meta" style="color:#ffb3ba">${esc(d.msg)}</div>` : d.status === 'downloading' && d.msg.startsWith('This server') ? `<div class="meta">${esc(d.msg)}</div>` : ''}
-      <div class="acts">${running ? '<button class="btn small danger" data-act="cancel">Cancel</button>' : ''}${d.status === 'done' || running ? '<button class="btn small" data-act="open">Show in folder</button>' : ''}</div>
+      <div class="acts">${running ? '<button class="btn small" data-act="pause">Pause</button>' : ''}${(d.status === 'paused' || d.status === 'error') && d.resumable ? '<button class="btn small primary" data-act="resume">Resume</button>' : ''}${running || d.status === 'paused' || (d.status === 'error' && d.resumable) ? '<button class="btn small danger" data-act="cancel">Cancel</button>' : ''}${d.status === 'done' || running ? '<button class="btn small" data-act="open">Show in folder</button>' : ''}</div>
     </div>`;
   }).join('') + (finished ? '<button class="btn small" data-act="clear">Clear finished</button>' : '');
   if (s.socks) $('socksAddr').textContent = `127.0.0.1:${s.socks}`;
   $('socksCopy').parentElement.style.display = s.socks ? '' : 'none';
+  $('autoRow').style.display = s.autostart === undefined ? 'none' : '';
+  if (document.activeElement !== $('autoToggle')) $('autoToggle').checked = !!s.autostart;
   $('socksNote').style.display = s.socks ? '' : 'none';
 }
 async function startDownload() {
@@ -577,7 +584,12 @@ $('dlList').addEventListener('click', (e) => {
   const b = e.target.closest('button[data-act]');
   if (!b) return;
   const id = Number(b.closest('.dl')?.dataset.id || 0);
-  post({ cancel: '/api/fetch-cancel', open: '/api/fetch-open', clear: '/api/fetch-clear' }[b.dataset.act], { id });
+  post({ cancel: '/api/fetch-cancel', pause: '/api/fetch-pause', resume: '/api/fetch-resume', open: '/api/fetch-open', clear: '/api/fetch-clear' }[b.dataset.act], { id });
+});
+$('autoToggle').addEventListener('change', async (e) => {
+  const box = e.target; const on = box.checked;
+  const r = await fetch('/api/autostart', { method: 'POST', headers: { 'x-bond': '1', 'content-type': 'application/json' }, body: JSON.stringify({ on }) }).then((x) => x.json()).catch(() => ({}));
+  if (r.error) { box.checked = !on; const n = $('modeNote'); n.className = 'note err'; n.textContent = r.error; }
 });
 $('socksCopy').addEventListener('click', () => { navigator.clipboard?.writeText($('socksAddr').textContent); $('socksCopy').textContent = 'Copied'; setTimeout(() => ($('socksCopy').textContent = 'Copy'), 1200); });
 

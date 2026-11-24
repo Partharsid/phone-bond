@@ -28,6 +28,7 @@ fn main() {
         port: opt("--port", 8118),
         ui_port: opt("--ui-port", 8120),
         socks_port: opt("--socks-port", 1080),
+        background: flag("--background"),
         explicit_ips,
         allow_loopback: flag("--allow-loopback-upstream"),
         no_ui: flag("--no-ui"),
@@ -45,6 +46,14 @@ fn main() {
                 "{}",
                 if sys::remove_hosts_line() { "Steam hosts line removed. Restart Steam." } else { "Steam hosts line is still there: run this as administrator (or steam-off.bat)." }
             );
+        }
+        return;
+    }
+    if flag("--autostart-on") || flag("--autostart-off") {
+        let on = flag("--autostart-on");
+        match sys::autostart_set(on) {
+            Ok(()) => println!("Start with Windows is now {}.", if on { "ON" } else { "OFF" }),
+            Err(e) => println!("{e}"),
         }
         return;
     }
@@ -107,6 +116,12 @@ async fn launcher(app: &Arc<App>) {
 async fn run_engine(app: Arc<App>, with_ui: bool, steam_cli: bool, system_proxy: bool, restart_steam: bool) {
     let admin = sys::blocking(sys::is_admin).await;
     app.cache.lock().unwrap().admin = admin;
+    let autostart = sys::blocking(sys::autostart_enabled).await;
+    app.autostart.store(autostart, Relaxed);
+    // Started by Windows, or "start with Windows" is on: stay alive when the window closes.
+    let background = app.cfg.background || autostart;
+    app.background.store(background, Relaxed);
+    fetch::load_unfinished(&app);
     let a = app.clone();
     let found = sys::blocking(move || sys::scan_sync(&a)).await;
     sys::apply_scan(&app, found, true);
@@ -130,16 +145,23 @@ async fn run_engine(app: Arc<App>, with_ui: bool, steam_cli: bool, system_proxy:
                 if !found.is_empty() || app.cfg.explicit_ips.is_empty() {
                     sys::apply_scan(&app, found, false);
                 }
+                steam_guard(&app).await;
             }
         });
         let app = app.clone();
         tokio::spawn(async move {
+            let mut round = 0u32;
             loop {
                 let (r, h) = sys::blocking(|| (sys::steam_running(), sys::hosts_has_line())).await;
                 {
                     let mut c = app.cache.lock().unwrap();
                     c.steam_running = r;
                     c.hosts_line = h;
+                }
+                round += 1;
+                if round % 5 == 0 {
+                    let a = sys::blocking(sys::autostart_enabled).await;
+                    app.autostart.store(a, Relaxed);
                 }
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
@@ -172,7 +194,7 @@ async fn run_engine(app: Arc<App>, with_ui: bool, steam_cli: bool, system_proxy:
         }
         println!("App: http://127.0.0.1:{}/  (closing the app window stops phone-bond)", app.cfg.ui_port);
         if admin {
-            sys::steam_on(&app, true).await;
+            sys::steam_on(&app, !background).await;
         }
         if !app.cfg.no_ui && !std::env::args().any(|a| a == "--engine") {
             sys::open_ui(app.cfg.ui_port);
@@ -185,7 +207,7 @@ async fn run_engine(app: Arc<App>, with_ui: bool, steam_cli: bool, system_proxy:
                 loop {
                     tokio::time::sleep(Duration::from_secs(2)).await;
                     let since = *app.lonely_since.lock().unwrap();
-                    if app.ui_clients.load(Relaxed) == 0 && since.map_or(false, |t| t.elapsed() > Duration::from_secs(8)) {
+                    if !app.background.load(Relaxed) && app.ui_clients.load(Relaxed) == 0 && since.map_or(false, |t| t.elapsed() > Duration::from_secs(8)) {
                         ui::quit(&app).await;
                     }
                 }
@@ -200,4 +222,21 @@ async fn run_engine(app: Arc<App>, with_ui: bool, steam_cli: bool, system_proxy:
     println!("Ctrl+C to stop.");
     let _ = tokio::signal::ctrl_c().await;
     ui::quit(&app).await;
+}
+
+/// Steam mode points Steam at us, so with no phone connected Steam would have no internet at all.
+/// When the last phone goes away Steam goes direct again; when one is back, the cache returns.
+async fn steam_guard(app: &Arc<App>) {
+    if !app.steam.lock().unwrap().on {
+        return;
+    }
+    let live = app.links_vec().iter().filter(|l| l.live()).count();
+    let has = sys::blocking(sys::hosts_has_line).await;
+    if live == 0 && has {
+        sys::blocking(sys::remove_hosts_line).await;
+        app.log("No phone connected: Steam downloads directly until one is back");
+    } else if live > 0 && !has {
+        sys::blocking(sys::add_hosts_line).await;
+        app.log("Phone connected again: Steam downloads go through your phones");
+    }
 }

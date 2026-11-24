@@ -28,9 +28,18 @@ pub struct Dl {
     pub speed: Mutex<f64>,
     pub status: Mutex<(&'static str, String)>,
     pub cancel: AtomicBool,
+    pub keep: AtomicBool,
+    pub resume: Mutex<Option<ResumeInfo>>,
     pub per_link: Mutex<HashMap<String, u64>>,
     pub started: Instant,
     pub ended: Mutex<Option<Instant>>,
+}
+
+pub struct ResumeInfo {
+    pub path: String,
+    pub total: u64,
+    pub piece: u64,
+    pub states: String,
 }
 
 impl Dl {
@@ -39,15 +48,20 @@ impl Dl {
         let secs = self.ended.lock().unwrap().unwrap_or_else(Instant::now).duration_since(self.started).as_secs_f64();
         let mut links: Vec<(String, u64)> = self.per_link.lock().unwrap().iter().map(|(k, v)| (k.clone(), *v)).collect();
         links.sort();
+        let resumable = {
+            let p = self.path.lock().unwrap();
+            !p.is_empty() && std::path::Path::new(&format!("{}.phonebond.json", *p)).exists()
+        };
         serde_json::json!({
             "id": self.id, "name": *self.name.lock().unwrap(), "url": self.url, "status": st.0, "msg": st.1,
             "total": self.total.load(Relaxed), "done": self.done.load(Relaxed), "speed": *self.speed.lock().unwrap(),
+            "resumable": resumable,
             "secs": secs, "links": links.iter().map(|(n, b)| serde_json::json!({"name": n, "bytes": b})).collect::<Vec<_>>(),
         })
     }
     fn set(&self, status: &'static str, msg: impl Into<String>) {
         *self.status.lock().unwrap() = (status, msg.into());
-        if matches!(status, "done" | "error" | "cancelled") {
+        if matches!(status, "done" | "error" | "cancelled" | "paused") {
             *self.ended.lock().unwrap() = Some(Instant::now());
         }
     }
@@ -156,9 +170,14 @@ fn file_name(t: &Target, h: &RHead) -> String {
     if clean.is_empty() { "download".into() } else { clean }
 }
 
-fn unique_path(name: &str) -> PathBuf {
+fn downloads_dir() -> PathBuf {
     let dir = PathBuf::from(std::env::var("USERPROFILE").unwrap_or_else(|_| ".".into())).join("Downloads");
     let _ = std::fs::create_dir_all(&dir);
+    dir
+}
+
+fn unique_path(name: &str) -> PathBuf {
+    let dir = downloads_dir();
     let p = PathBuf::from(name);
     let stem = p.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "download".into());
     let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
@@ -233,10 +252,7 @@ async fn send_get(c: &mut Conn, t: &Target, range: Option<(u64, u64)>) -> io::Re
 
 // ---------- the download ----------
 
-pub fn start(app: &Arc<App>, url: String) -> Result<u64, String> {
-    if parse_url(&url).is_none() {
-        return Err("That doesn't look like an http:// or https:// link.".into());
-    }
+fn new_dl(app: &Arc<App>, url: String) -> Arc<Dl> {
     let id = app.next_dl.fetch_add(1, Relaxed);
     let dl = Arc::new(Dl {
         id,
@@ -249,31 +265,125 @@ pub fn start(app: &Arc<App>, url: String) -> Result<u64, String> {
         speed: Mutex::new(0.0),
         status: Mutex::new(("starting", "Contacting the server".into())),
         cancel: AtomicBool::new(false),
+        keep: AtomicBool::new(false),
+        resume: Mutex::new(None),
         per_link: Mutex::new(HashMap::new()),
         started: Instant::now(),
         ended: Mutex::new(None),
     });
-    {
-        let mut d = app.downloads.lock().unwrap();
-        d.push(dl.clone());
-        let excess = d.len().saturating_sub(8);
-        d.drain(..excess);
+    let mut d = app.downloads.lock().unwrap();
+    d.push(dl.clone());
+    let excess = d.len().saturating_sub(20);
+    d.drain(..excess);
+    dl
+}
+
+pub fn start(app: &Arc<App>, url: String) -> Result<u64, String> {
+    if parse_url(&url).is_none() {
+        return Err("That doesn't look like an http:// or https:// link.".into());
     }
-    let app = app.clone();
+    let dl = new_dl(app, url);
+    spawn_run(app, &dl);
+    Ok(dl.id)
+}
+
+fn remove_files(path: &str) {
+    let _ = std::fs::remove_file(format!("{path}.phonebond"));
+    let _ = std::fs::remove_file(format!("{path}.phonebond.json"));
+}
+
+fn spawn_run(app: &Arc<App>, dl: &Arc<Dl>) {
+    let (app, dl) = (app.clone(), dl.clone());
     tokio::spawn(async move {
-        if let Err(e) = run(&app, &dl).await {
-            if dl.cancel.load(Relaxed) {
-                dl.set("cancelled", "Cancelled");
+        let r = run(&app, &dl).await;
+        let Err(e) = r else { return };
+        let path = dl.path.lock().unwrap().clone();
+        if dl.cancel.load(Relaxed) {
+            if dl.keep.load(Relaxed) {
+                dl.set("paused", "Paused: click Resume to continue where it stopped");
             } else {
-                dl.set("error", e.to_string());
+                dl.set("cancelled", "Cancelled");
+                remove_files(&path);
             }
-            let p = dl.path.lock().unwrap().clone();
-            if !p.is_empty() {
-                let _ = std::fs::remove_file(format!("{p}.phonebond"));
+        } else {
+            dl.set("error", e.to_string());
+            // Pieces already downloaded are kept, so Resume can carry on from them.
+            if !path.is_empty() && !std::path::Path::new(&format!("{path}.phonebond.json")).exists() {
+                remove_files(&path);
             }
         }
     });
-    Ok(id)
+}
+
+pub fn pause(dl: &Dl) {
+    dl.keep.store(true, Relaxed);
+    dl.cancel.store(true, Relaxed);
+}
+
+/// Cancel a running download, or throw away a paused / failed one together with its partial file.
+pub fn cancel(dl: &Dl) {
+    let running = matches!(dl.status.lock().unwrap().0, "starting" | "downloading");
+    dl.keep.store(false, Relaxed);
+    dl.cancel.store(true, Relaxed);
+    if !running {
+        remove_files(&dl.path.lock().unwrap());
+        dl.set("cancelled", "Cancelled");
+    }
+}
+
+fn read_sidecar(path: &str) -> Option<(String, String, ResumeInfo)> {
+    let v: serde_json::Value = serde_json::from_slice(&std::fs::read(format!("{path}.phonebond.json")).ok()?).ok()?;
+    let info = ResumeInfo {
+        path: path.to_string(),
+        total: v["total"].as_u64()?,
+        piece: v["piece"].as_u64()?,
+        states: v["states"].as_str()?.to_string(),
+    };
+    Some((v["url"].as_str()?.to_string(), v["name"].as_str()?.to_string(), info))
+}
+
+pub fn resume(app: &Arc<App>, dl: &Arc<Dl>) {
+    let st = dl.status.lock().unwrap().0;
+    if !matches!(st, "paused" | "error") {
+        return;
+    }
+    let path = dl.path.lock().unwrap().clone();
+    if let Some((_, _, info)) = read_sidecar(&path) {
+        *dl.resume.lock().unwrap() = Some(info);
+    }
+    *dl.ended.lock().unwrap() = None;
+    dl.cancel.store(false, Relaxed);
+    dl.keep.store(false, Relaxed);
+    dl.set("starting", "Contacting the server");
+    spawn_run(app, dl);
+}
+
+/// Downloads that were interrupted (crash, restart, power cut) show up again, ready to resume.
+pub fn load_unfinished(app: &Arc<App>) {
+    let Ok(rd) = std::fs::read_dir(downloads_dir()) else { return };
+    for e in rd.flatten() {
+        let p = e.path().to_string_lossy().to_string();
+        let Some(path) = p.strip_suffix(".phonebond.json") else { continue };
+        if !std::path::Path::new(&format!("{path}.phonebond")).exists() {
+            let _ = std::fs::remove_file(&p);
+            continue;
+        }
+        let Some((url, name, info)) = read_sidecar(path) else { continue };
+        let dl = new_dl(app, url);
+        let done: u64 = info
+            .states
+            .bytes()
+            .enumerate()
+            .filter(|(_, c)| *c == b'2')
+            .map(|(i, _)| ((i as u64 + 1) * info.piece).min(info.total) - i as u64 * info.piece)
+            .sum();
+        *dl.name.lock().unwrap() = name;
+        *dl.path.lock().unwrap() = path.to_string();
+        dl.total.store(info.total, Relaxed);
+        dl.done.store(done, Relaxed);
+        *dl.resume.lock().unwrap() = Some(info);
+        dl.set("paused", "Interrupted: click Resume to continue where it stopped");
+    }
 }
 
 struct Probe {
@@ -393,14 +503,38 @@ fn write_at(f: &std::fs::File, buf: &[u8], off: u64) -> io::Result<()> {
 
 async fn run(app: &Arc<App>, dl: &Arc<Dl>) -> io::Result<()> {
     let p = probe(app, dl).await?;
-    *dl.name.lock().unwrap() = p.name.clone();
-    let path = unique_path(&p.name);
+    let old = dl.resume.lock().unwrap().take();
+    // Only continue an earlier attempt if it is the same file and the server still does ranges.
+    let resume = old
+        .as_ref()
+        .filter(|r| p.ranged && p.total == Some(r.total) && std::path::Path::new(&format!("{}.phonebond", r.path)).exists());
+    let (path, name) = match resume {
+        Some(r) => (PathBuf::from(&r.path), dl.name.lock().unwrap().clone()),
+        None => {
+            if let Some(o) = &old {
+                remove_files(&o.path);
+            }
+            (unique_path(&p.name), p.name.clone())
+        }
+    };
+    *dl.name.lock().unwrap() = name.clone();
     *dl.path.lock().unwrap() = path.to_string_lossy().to_string();
     let part = format!("{}.phonebond", path.display());
-    let file = Arc::new(std::fs::File::create(&part)?);
+    let side = format!("{}.phonebond.json", path.display());
+    let file = Arc::new(if resume.is_some() {
+        std::fs::OpenOptions::new().write(true).open(&part)?
+    } else {
+        std::fs::File::create(&part)?
+    });
+    dl.done.store(0, Relaxed);
     dl.total.store(p.total.unwrap_or(0), Relaxed);
     let links: Vec<Arc<Link>> = app.links_vec().into_iter().filter(|l| l.live()).collect();
-    app.log(format!("Fast download: {} ({})", p.name, p.total.map_or("unknown size".into(), |t| format!("{:.1} MB", t as f64 / 1048576.0))));
+    app.log(format!(
+        "Fast download: {} ({}){}",
+        name,
+        p.total.map_or("unknown size".into(), |t| format!("{:.1} MB", t as f64 / 1048576.0)),
+        if resume.is_some() { ", resuming" } else { "" }
+    ));
 
     if !p.ranged {
         // The server cannot give parts of the file: one stream over the best phone.
@@ -452,8 +586,13 @@ async fn run(app: &Arc<App>, dl: &Arc<Dl>) -> io::Result<()> {
         return Err(err(io::ErrorKind::InvalidData, "empty file"));
     }
     file.set_len(total)?;
-    let piece = (total / 48).clamp(1 << 20, 8 << 20);
+    let piece = resume.map(|r| r.piece).unwrap_or_else(|| (total / 48).clamp(1 << 20, 8 << 20));
     let n = total.div_ceil(piece) as usize;
+    let state: Vec<AtomicU8> = (0..n)
+        .map(|i| AtomicU8::new(if resume.map_or(false, |r| r.states.as_bytes().get(i) == Some(&b'2')) { 2 } else { 0 }))
+        .collect();
+    let already: u64 = (0..n).filter(|i| state[*i].load(Relaxed) == 2).map(|i| ((i as u64 + 1) * piece).min(total) - i as u64 * piece).sum();
+    dl.done.store(already, Relaxed);
     let sh = Arc::new(Shared {
         app: app.clone(),
         dl: dl.clone(),
@@ -461,7 +600,7 @@ async fn run(app: &Arc<App>, dl: &Arc<Dl>) -> io::Result<()> {
         total,
         piece,
         n,
-        state: (0..n).map(|_| AtomicU8::new(0)).collect(),
+        state,
         dups: (0..n).map(|_| AtomicU8::new(0)).collect(),
         cursor: AtomicUsize::new(0),
         file,
@@ -477,21 +616,43 @@ async fn run(app: &Arc<App>, dl: &Arc<Dl>) -> io::Result<()> {
         }
     }
     let sup = tokio::spawn(speed_loop(dl.clone()));
+    write_sidecar(&sh, &side, &name);
+    let saver = tokio::spawn({
+        let (sh, side, name) = (sh.clone(), side.clone(), name.clone());
+        async move {
+            let mut t = tokio::time::interval(Duration::from_secs(2));
+            loop {
+                t.tick().await;
+                write_sidecar(&sh, &side, &name);
+            }
+        }
+    });
     for t in tasks {
         let _ = t.await;
     }
     sup.abort();
+    saver.abort();
     if dl.cancel.load(Relaxed) {
+        write_sidecar(&sh, &side, &name);
         return Err(err(io::ErrorKind::Other, "cancelled"));
     }
     if dl.done.load(Relaxed) < total {
+        write_sidecar(&sh, &side, &name);
         return Err(err(io::ErrorKind::Other, "The download stopped early: the server refused the phones or kept failing"));
     }
     drop(sh);
     std::fs::rename(&part, &path)?;
+    let _ = std::fs::remove_file(&side);
     dl.set("done", "Done");
-    app.log(format!("Fast download finished: {}", p.name));
+    app.log(format!("Fast download finished: {name}"));
     Ok(())
+}
+
+/// Which pieces are finished, saved next to the partial file so a restart can pick up from there.
+fn write_sidecar(sh: &Shared, side: &str, name: &str) {
+    let states: String = sh.state.iter().map(|s| if s.load(Relaxed) == 2 { '2' } else { '0' }).collect();
+    let v = serde_json::json!({ "url": sh.dl.url, "name": name, "total": sh.total, "piece": sh.piece, "states": states });
+    let _ = std::fs::write(side, v.to_string());
 }
 
 async fn speed_loop(dl: Arc<Dl>) {

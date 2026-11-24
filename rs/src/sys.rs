@@ -356,3 +356,55 @@ pub fn elevate(extra: &[&str]) -> bool {
     );
     cmd("powershell").args(["-NoProfile", "-Command", &c]).status().map_or(false, |s| s.success())
 }
+
+// ---------- start with Windows ----------
+// A scheduled task that runs phone-bond at logon with admin rights (no UAC prompt), restarts it if it
+// crashes, and keeps it running in the background after the dashboard window is closed.
+
+const TASK: &str = "PhoneBond";
+
+pub fn autostart_enabled() -> bool {
+    cmd("schtasks").args(["/query", "/tn", TASK]).stdout(Stdio::null()).stderr(Stdio::null()).status().map_or(false, |s| s.success())
+}
+
+pub fn autostart_set(on: bool) -> Result<(), String> {
+    if !on {
+        let _ = cmd("schtasks").args(["/delete", "/tn", TASK, "/f"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+        return if autostart_enabled() { Err("Could not remove the startup task (needs admin).".into()) } else { Ok(()) };
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let user = format!("{}\\{}", std::env::var("USERDOMAIN").unwrap_or_default(), std::env::var("USERNAME").unwrap_or_default());
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+    let xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo><Description>Starts phone-bond so your phones are bonded as soon as you log in.</Description></RegistrationInfo>
+  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>{user}</UserId></LogonTrigger></Triggers>
+  <Principals><Principal id="Author"><UserId>{user}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <RestartOnFailure><Interval>PT1M</Interval><Count>999</Count></RestartOnFailure>
+  </Settings>
+  <Actions Context="Author"><Exec><Command>{exe}</Command><Arguments>--engine --background</Arguments></Exec></Actions>
+</Task>"#,
+        user = esc(&user),
+        exe = esc(&exe.to_string_lossy())
+    );
+    let path = std::env::temp_dir().join("phone-bond-task.xml");
+    let mut bytes = vec![0xFF, 0xFE];
+    for u in xml.encode_utf16() {
+        bytes.extend_from_slice(&u.to_le_bytes());
+    }
+    std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+    let out = cmd("schtasks").args(["/create", "/tn", TASK, "/xml"]).arg(&path).arg("/f").output().map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&path);
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(format!("Windows refused to create the startup task: {}", String::from_utf8_lossy(&out.stderr).trim()))
+    }
+}

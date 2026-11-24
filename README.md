@@ -69,3 +69,7 @@ cargo test
 
 Command line: `--list` (show phones), `--off` (undo hosts/proxy if it was killed),
 `--autostart-on` / `--autostart-off`, `--socks-port N`, `--port N`.
+
+## Licence
+
+MIT, see [LICENSE](LICENSE).

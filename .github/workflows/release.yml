@@ -1,0 +1,27 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test
+        run: cargo test --release
+        working-directory: rs
+      - name: Build
+        run: cargo build --release
+        working-directory: rs
+      - name: Package
+        run: |
+          Copy-Item rs/target/release/phone-bond.exe phone-bond.exe
+          Get-FileHash phone-bond.exe -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  phone-bond.exe" } | Set-Content phone-bond.exe.sha256
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            phone-bond.exe
+            phone-bond.exe.sha256

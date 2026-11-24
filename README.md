@@ -73,3 +73,7 @@ Command line: `--list` (show phones), `--off` (undo hosts/proxy if it was killed
 ## Licence
 
 MIT, see [LICENSE](LICENSE).
+
+---
+
+Built by [Parth Arsid](https://partharsid.dev), edge AI and full-stack engineer.

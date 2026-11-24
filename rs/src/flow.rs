@@ -10,7 +10,7 @@ use std::sync::atomic::Ordering::Relaxed;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, UdpSocket};
 
 /// Fewest open connections per unit of speed. Flows have no known size, so counting them is the
 /// best available measure of load; a faster phone is allowed proportionally more of them.
@@ -138,8 +138,12 @@ async fn socks_client(app: Arc<App>, mut s: TcpStream) {
         let mut p = [0u8; 2];
         s.read_exact(&mut p).await?;
         let port = u16::from_be_bytes(p);
+        if q[1] == 3 {
+            // UDP ASSOCIATE: torrent uTP/DHT, QUIC, voice chat...
+            return udp_associate(app, s).await;
+        }
         if q[1] != 1 {
-            socks_reply(&mut s, 7).await; // only CONNECT (torrent peers, HTTPS, chat apps...)
+            socks_reply(&mut s, 7).await; // BIND is not supported
             return Ok(());
         }
         match connect_flow(&app, &host, port).await {
@@ -153,4 +157,96 @@ async fn socks_client(app: Arc<App>, mut s: TcpStream) {
     }
     .await;
     let _ = r;
+}
+
+// ---------- SOCKS5 UDP ----------
+// One association = one UDP socket on this PC for the app, and one bound to a phone for the internet.
+// It lives as long as the app keeps its TCP control connection open.
+
+/// Wraps a datagram from `from` in the SOCKS5 UDP header (IPv4 only).
+fn udp_wrap(from: SocketAddr, data: &[u8]) -> Option<Vec<u8>> {
+    let SocketAddr::V4(a) = from else { return None };
+    let mut out = vec![0, 0, 0, 1];
+    out.extend_from_slice(&a.ip().octets());
+    out.extend_from_slice(&a.port().to_be_bytes());
+    out.extend_from_slice(data);
+    Some(out)
+}
+
+/// Splits a SOCKS5 UDP datagram into (host, port, payload offset).
+fn udp_unwrap(p: &[u8]) -> Option<(String, u16, usize)> {
+    if p.len() < 10 || p[2] != 0 {
+        return None; // too short, or fragmented (not supported)
+    }
+    let (host, end) = match p[3] {
+        1 => (std::net::Ipv4Addr::new(p[4], p[5], p[6], p[7]).to_string(), 8),
+        3 => {
+            let l = p[4] as usize;
+            if p.len() < 5 + l + 2 {
+                return None;
+            }
+            (String::from_utf8_lossy(&p[5..5 + l]).to_string(), 5 + l)
+        }
+        _ => return None,
+    };
+    let port = u16::from_be_bytes([*p.get(end)?, *p.get(end + 1)?]);
+    Some((host, port, end + 2))
+}
+
+async fn udp_associate(app: Arc<App>, mut s: TcpStream) -> io::Result<()> {
+    let Some(link) = choose_flow(&app, None) else {
+        socks_reply(&mut s, 1).await;
+        return Ok(());
+    };
+    let local = UdpSocket::bind(SocketAddr::from(([127, 0, 0, 1], 0))).await?;
+    let out = UdpSocket::bind(SocketAddr::new(link.ip.into(), 0)).await?;
+    let port = local.local_addr()?.port();
+    let mut r = vec![5, 0, 0, 1, 127, 0, 0, 1];
+    r.extend_from_slice(&port.to_be_bytes());
+    s.write_all(&r).await?;
+    let _g = StreamGuard::new(&link);
+    let mut client: Option<SocketAddr> = None;
+    let (mut a, mut b, mut ctl) = (vec![0u8; 65536], vec![0u8; 65536], [0u8; 64]);
+    loop {
+        tokio::select! {
+            // The app closing the control connection ends the association.
+            n = s.read(&mut ctl) => { if matches!(n, Ok(0) | Err(_)) { return Ok(()); } }
+            r = local.recv_from(&mut a) => {
+                let Ok((n, from)) = r else { return Ok(()) };
+                client = Some(from);
+                let Some((host, port, off)) = udp_unwrap(&a[..n]) else { continue };
+                let Ok(ip) = resolve(&app, &link, &host).await else { continue };
+                link.bytes.fetch_add((n - off) as u64, Relaxed);
+                let _ = out.send_to(&a[off..n], SocketAddr::new(ip.into(), port)).await;
+            }
+            r = out.recv_from(&mut b) => {
+                let Ok((n, from)) = r else { continue };
+                let (Some(c), Some(w)) = (client, udp_wrap(from, &b[..n])) else { continue };
+                link.bytes.fetch_add(n as u64, Relaxed);
+                let _ = local.send_to(&w, c).await;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn udp_header_round_trip() {
+        let from: SocketAddr = "1.2.3.4:5678".parse().unwrap();
+        let w = udp_wrap(from, b"hi").unwrap();
+        let (h, p, off) = udp_unwrap(&w).unwrap();
+        assert_eq!((h.as_str(), p, &w[off..]), ("1.2.3.4", 5678, &b"hi"[..]));
+    }
+    #[test]
+    fn udp_domain_and_fragments() {
+        let mut d = vec![0, 0, 0, 3, 7];
+        d.extend_from_slice(b"example");
+        d.extend_from_slice(&[0, 53, 9]);
+        let (h, p, off) = udp_unwrap(&d).unwrap();
+        assert_eq!((h.as_str(), p, d[off]), ("example", 53, 9));
+        d[2] = 1; // fragmented: refused
+        assert!(udp_unwrap(&d).is_none());
+    }
 }

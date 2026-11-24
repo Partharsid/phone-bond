@@ -628,3 +628,30 @@ async fn fetch_piece(sh: &Shared, link: &Arc<Link>, conn: &mut Option<Conn>, i: 
     }
     Err(PieceErr::Failed(err(io::ErrorKind::Other, "no attempt")))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn parses_links() {
+        let t = parse_url("https://user@host.example:8443/a/b.zip?x=1#frag").unwrap();
+        assert_eq!((t.tls, t.host.as_str(), t.port, t.path.as_str()), (true, "host.example", 8443, "/a/b.zip?x=1"));
+        let t = parse_url("http://host.example").unwrap();
+        assert_eq!((t.tls, t.port, t.path.as_str()), (false, 80, "/"));
+        assert!(parse_url("ftp://x/y").is_none());
+        assert_eq!(parse_url("https://h?q=1").unwrap().path, "/?q=1");
+    }
+    #[test]
+    fn follows_redirects() {
+        let t = parse_url("https://a.example/dir/file").unwrap();
+        assert_eq!(redirect_target(&t, "/x").unwrap().path, "/x");
+        assert_eq!(redirect_target(&t, "other").unwrap().path, "/dir/other");
+        assert_eq!(redirect_target(&t, "//b.example/z").unwrap().host, "b.example");
+        assert!(!redirect_target(&t, "http://c.example/").unwrap().tls);
+    }
+    #[test]
+    fn decodes_names() {
+        assert_eq!(pct_decode("a%20b%2Fc"), "a b/c");
+        assert_eq!(pct_decode("100%"), "100%");
+    }
+}
